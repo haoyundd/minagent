@@ -36,7 +36,7 @@ class AgentLoop:
             except Exception as e:
                 self.tracer.log(step, "error", f"LLM 调用失败: {e}")
                 return f"抱歉，调用模型时出错: {e}"
-
+#大模型Function Calling返回的格式。
             choice = response.choices[0]
             assistant_msg = choice.message.model_dump()
 
