@@ -24,14 +24,19 @@
 
 ### Prompt: 框架 vs 手写对比
 
-> "不用 LangChain 是不是就要这样写？base.py 啥意思？工具写法有区别不？api 请求格式也要自己定义？模型返回的消息有没有框架都一样？"
+> "LangChain 的 BaseTool 背后本质上做了什么事？不用框架的话，Tool 的注册、schema 生成、参数校验、结果序列化这些环节分别要自己实现哪些？Function Calling 协议层框架替我们屏蔽了什么？"
 
-**学到的东西：**
+**对比结论：**
 
-- **不用框架**：需要自己写 Tool 基类、自己管理注册表、自己生成 JSON Schema、自己处理 Function Calling 响应
-- **用 LangChain**：`@tool` 装饰器自动生成 schema，`AgentExecutor` 封装整个循环，工具结果自动序列化
-- **模型返回的格式**：不管用不用框架都一样（都是 OpenAI 格式的 `choices[0].message.tool_calls`），但框架帮你自动解析了
-- **最大的区别**：框架替你写了 AgentLoop，手写需要自己实现整个循环逻辑
+| 环节 | 手写 | LangChain |
+|:--|:--|:--|
+| Tool 定义 | 继承 Tool 基类，手动写 name/description/parameters | `@tool` 装饰器，从函数签名 + docstring 自动提取 |
+| Schema 生成 | 手动构造 `{"type":"object", "properties":{...}}` | `StructuredTool.from_function()` 自动生成 |
+| 注册管理 | 自己写 `ToolRegistry` 类 | `Tool.list()` 全局注册 |
+| 循环控制 | 自己写 `AgentLoop.run()` | `AgentExecutor.invoke()` |
+| 异常处理 | 手动三层 try/except | 框架内置 `handle_parsing_errors` |
+
+**设计决策：** 手写不是"不会用框架"，而是为了理解 Agent 的底层机制——每一层该做什么、数据怎么流转、异常在哪里兜底。理解了这些再去用框架，才能知道框架替你做了什么、边界在哪里。
 
 ---
 
@@ -138,13 +143,13 @@ for keywords, content in MOCK_RESULTS.items():
 
 | 提问 | 目的 |
 |:--|:--|
-| "base.py 什么意思？不用框架怎么注册工具？" | 理解 Tool 抽象基类 + Registry 模式 |
-| "工具函数的 description 字段是不是用了框架就不用写？" | 理解框架的 `@tool` 装饰器原理 |
-| "模型返回的 finish_reason 是什么？" | 理解 Function Calling 协议 |
-| "框架是怎么管理上下文内容的？自己写怎么做？" | 理解 Session.messages 本质 |
-| "企业级上下文工程怎么做？" | 了解 RAG、摘要压缩、结构化记忆等进阶方案 |
-| "跨轮次继续执行和同一次会话有什么区别？" | 理解状态持久化 vs 对话历史的差异 |
-| "eval 的安全限制怎么做的？" | 理解沙箱执行原理 |
+| "ReAct 循环中，LLM 的 finish_reason 和 tool_calls 的时序关系是怎样的？一次请求可以返回多个 tool_call，是串行还是并行执行更合理？" | 设计 AgentLoop 的调度策略 |
+| "不用框架的情况下，Tool 的 schema 应该遵循什么规范？OpenAI Function Calling 的 JSON Schema 和标准 JSON Schema 有什么差异？" | 确保工具定义与 LLM API 兼容 |
+| "Session.messages 的 token 增长是线性的，什么临界点需要引入摘要压缩或滑动窗口？DeepSeek 的 128K 上下文在实际 tool calling 场景下有效利用率大概多少？" | 评估 Memory 策略的升级时机 |
+| "跨轮次状态放在 Tool 实例属性里 vs 放在 Session 里 vs 外部存储，在一致性、可恢复性、并发安全性上各有什么 trade-off？" | 设计跨轮次状态方案 |
+| "LLM 调用失败的降级策略：重试、降级提示词、fallback 到无工具模式，各自的适用场景是什么？" | 设计异常处理的分级策略 |
+| "Function Calling 模式下，tool message 的 role 必须是 'tool' 且必须带 tool_call_id，这个约束是 OpenAI 协议强制的还是 DeepSeek 也遵循？" | 验证 API 兼容性 |
+| "如果工具执行耗时较长（如外部 API 调用），同步阻塞式循环会有什么问题？异步化改造的核心改动点在哪？" | 思考架构演进方向 |
 
 ---
 
