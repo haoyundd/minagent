@@ -1,16 +1,56 @@
-# 这是一个示例 Python 脚本。
+from agent.llm_client import LLMClient
+from agent.loop import AgentLoop
+from agent.session import Session
+from tools.base import ToolRegistry
+from tools.calculator import CalculatorTool
+from tools.search import SearchTool
+from tools.todo import TodoTool
+from trace_logger import TraceLogger
 
-# 按 Shift+F10 执行或将其替换为您的代码。
-# 按 双击 Shift 在所有地方搜索类、文件、工具窗口、操作和设置。
+
+def main():
+    # 1. 初始化组件
+    print("正在连接 DeepSeek...")
+    llm = LLMClient()
+
+    registry = ToolRegistry()
+    registry.register(CalculatorTool())
+    registry.register(SearchTool())
+    registry.register(TodoTool())
+
+    tracer = TraceLogger()
+    agent = AgentLoop(llm, registry, trace_logger=tracer)
+
+    # 2. 创建会话（跨轮次复用同一个 Session）
+    session = Session()
+    print(f"会话已创建 (ID: {session.session_id})")
+    print(f"可用工具: {registry.list_names()}")
+    print("输入 'exit' 退出，输入 'trace' 查看执行日志\n")
+
+    # 3. 主循环
+    while True:
+        try:
+            user_input = input("你: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n再见！")
+            break
+
+        if not user_input:
+            continue
+
+        if user_input.lower() == "exit":
+            print("再见！")
+            break
+
+        if user_input.lower() == "trace":
+            tracer.print_summary()
+            continue
+
+        print("Agent: ", end="", flush=True)
+        response = agent.run(session, user_input)
+        print(response)
+        print()
 
 
-def print_hi(name):
-    # 在下面的代码行中使用断点来调试脚本。
-    print(f'Hi, {name}')  # 按 Ctrl+F8 切换断点。
-
-
-# 按装订区域中的绿色按钮以运行脚本。
-if __name__ == '__main__':
-    print_hi('PyCharm')
-
-# 访问 https://www.jetbrains.com/help/pycharm/ 获取 PyCharm 帮助
+if __name__ == "__main__":
+    main()
