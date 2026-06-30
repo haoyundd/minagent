@@ -1,8 +1,30 @@
 # MinAgent
 
-从零实现的最小可用 Agent Runtime，不依赖 LangChain / LangGraph / OpenHands / OpenClaw 等 Agent 框架。项目重点不是堆工具数量，而是展示一个最小 Runtime 如何治理工具、memory 和 message context。
+一个从零实现的最小可用 Agent Runtime。
 
-## 运行方式
+本项目不依赖 LangChain、LangGraph、OpenHands、OpenClaw 等 Agent 框架，核心 Runtime 手写实现。重点不是“堆很多工具”，而是展示一个最小 Agent 如何完成：
+
+- ReAct 循环
+- 工具注册与工具治理
+- 多 session 隔离
+- memory 分层治理
+- message/context 拼接治理
+- trace 可观测性
+- 单元测试验证
+
+## 项目定位
+
+面试官对第一版的反馈是：
+
+> 无工具治理，无 memory 的治理，无 message 的拼接治理，暂时只有 ReAct 实现。
+
+因此第二版的目标不是继续加工具，而是把项目从“会调工具的 demo”升级成“最小 Agent Runtime”。
+
+一句话概括：
+
+> LLM 负责判断意图，Runtime 负责治理上下文、工具、状态和执行过程。
+
+## 快速开始
 
 ### 环境要求
 
@@ -15,7 +37,7 @@
 pip install -r requirements.txt
 ```
 
-### 配置 API Key
+### 配置环境变量
 
 在项目根目录创建 `.env` 文件：
 
@@ -26,7 +48,7 @@ DEEPSEEK_MODEL=deepseek-chat
 MAX_STEPS=10
 ```
 
-### 启动
+### 启动 CLI
 
 ```bash
 python main.py
@@ -36,90 +58,177 @@ python main.py
 
 | 输入 | 作用 |
 |:--|:--|
-| 任意问题 | Agent 处理并回答 |
-| `trace` | 查看工具调用和上下文治理日志 |
+| 任意问题 | 交给 Agent 处理 |
+| `trace` | 查看 LLM、工具调用、context 压缩等执行日志 |
 | `/new` | 创建新 session，模拟打开新聊天窗口 |
 | `/sessions` | 查看当前进程内的所有 session |
 | `/use <session_id>` | 切换到指定 session |
 | `exit` | 退出 |
 
-### 测试
+### 运行测试
 
 ```bash
 python -m unittest discover -s tests
 ```
 
-## 系统设计
+当前测试覆盖：
+
+- 工具不存在、参数缺失、工具异常
+- calculator 的 AST 白名单计算
+- todo 的 session 隔离
+- ContextBuilder 的 message 拼接
+- context 超长后的 summary 压缩
+- AgentLoop 的直接回复、工具调用、最大步数兜底
+
+## 推荐演示流程
+
+可以按下面顺序录屏或手动演示：
+
+```text
+python main.py
+
+你: 帮我规划一个3天北京旅游计划，并记成待办
+Agent: ...
+
+你: trace
+Agent: 展示 llm_request / tool_call / tool_result / final_answer
+
+你: /new
+你: 帮我写周报，并记成待办
+Agent: ...
+
+你: /sessions
+Agent: 展示两个独立 session
+
+你: /use <第一个session_id>
+你: 看一下我的待办
+Agent: 只看到第一个 session 的 todo，不会看到周报 todo
+```
+
+这个流程可以证明：
+
+- LLM 会自主选择工具。
+- 工具调用有 trace。
+- 多 session 之间 memory 隔离。
+- todo 状态属于 session，而不是全局工具实例。
+
+## 系统架构
 
 ```text
 main.py
-  ├─ Session 池：多个窗口/会话隔离
-  ├─ AgentLoop：ReAct 调度器
-  │   ├─ ContextBuilder：message 拼接治理
-  │   ├─ LLMClient：DeepSeek OpenAI-compatible API
-  │   └─ ToolExecutor：工具治理
-  ├─ ToolRegistry：工具注册和 schema 输出
-  └─ TraceLogger：执行日志
+  ├─ CLI session 池
+  │   ├─ /new
+  │   ├─ /sessions
+  │   └─ /use <session_id>
+  │
+  ├─ AgentLoop
+  │   ├─ ContextBuilder
+  │   ├─ LLMClient
+  │   └─ ToolExecutor
+  │
+  ├─ ToolRegistry
+  │   ├─ calculator
+  │   ├─ search
+  │   └─ todo
+  │
+  └─ TraceLogger
 ```
 
-核心流程：
+核心数据流：
 
 ```text
 用户输入
-  → ContextBuilder 组装 context
-  → LLM 判断直接回答或 tool_calls
-  → ToolExecutor 校验并执行工具
-  → 工具结果写回 Session
-  → 必要时压缩旧 messages 到 summary
-  → LLM 基于工具结果继续 loop 或返回最终答案
+  ↓
+ContextBuilder 组装 messages
+  ↓
+LLM 判断直接回答或 tool_calls
+  ↓
+ToolExecutor 治理并执行工具
+  ↓
+工具结果写回 Session
+  ↓
+必要时压缩旧 messages 到 summary
+  ↓
+LLM 基于工具结果继续 loop 或返回最终答案
 ```
+
+## 核心模块
+
+| 模块 | 文件 | 说明 |
+|:--|:--|:--|
+| LLM 客户端 | `agent/llm_client.py` | 封装 DeepSeek OpenAI-compatible API，支持 Function Calling 和重试 |
+| Agent 循环 | `agent/loop.py` | ReAct 调度器，负责 LLM 调用、工具调用回填、最大步数限制 |
+| Session | `agent/session.py` | 管理 messages、summary、session 私有 state |
+| ContextBuilder | `agent/context.py` | 统一治理 message/context 拼接 |
+| ToolRegistry | `tools/base.py` | 注册工具并导出 OpenAI Function Calling schema |
+| ToolExecutor | `tools/base.py` | 工具治理层，统一校验、执行、异常处理和 trace |
+| TraceLogger | `trace_logger.py` | 记录每一步 Runtime 行为 |
 
 ## 工具治理
 
-LLM 输出不直接调用 Python 函数，而是先经过 `ToolExecutor`：
+第一版的问题是：`AgentLoop` 拿到 LLM 返回的工具名和参数后，直接执行工具。
+
+第二版增加 `ToolExecutor`，所有工具调用必须先经过治理层：
 
 - 检查工具是否存在。
-- 按 schema 的 `required` 做最小参数校验。
-- 捕获工具异常，避免单个工具拖垮 Runtime。
-- 统一返回 `ok/tool/input/output/error` 结构。
-- 写入 trace，方便复盘每一步执行。
+- 检查 schema 中的 required 参数。
+- 捕获工具内部异常。
+- 统一包装工具结果。
+- 写入 trace，方便复盘。
 
-工具通过 `ToolRegistry` 注册，每个工具包含：
+统一返回结构：
 
-- `name`
-- `description`
-- `parameters`
-- `risk_level`
-- `stateful`
+```json
+{
+  "ok": true,
+  "tool": "calculator",
+  "input": { "expression": "2+3*4" },
+  "output": { "result": 14, "expression": "2+3*4" },
+  "error": ""
+}
+```
 
 当前工具：
 
-| 工具 | 说明 |
-|:--|:--|
-| `calculator` | 使用 AST 白名单计算加减乘除和括号，不使用 `eval` |
-| `search` | Mock 搜索，多关键词子串匹配 |
-| `todo` | 读写当前 session 的私有 todo state |
+| 工具 | 类型 | 说明 |
+|:--|:--|:--|
+| `calculator` | safe | 使用 AST 白名单计算加减乘除，不使用 `eval` |
+| `search` | mock | Mock 搜索，多关键词子串匹配 |
+| `todo` | stateful | 读写当前 session 私有 todo state |
 
-## Memory 的放置方式与召回时机
+设计原则：
+
+> LLM 输出不是可信输入。LLM 可以提出工具调用意图，但 Runtime 必须决定能不能执行、怎么执行、如何失败恢复。
+
+## Memory 治理
 
 Memory 被拆成三层：
 
 | 层级 | 放置位置 | 内容 | 召回方式 |
 |:--|:--|:--|:--|
-| 短期对话 | `Session.messages` | 最近用户、assistant、tool 消息 | ContextBuilder 放入最近 N 条 |
-| 摘要 memory | `Session.state["summary"]` | 被压缩的旧消息摘要 | ContextBuilder 以 system message 放入 |
+| 短期对话 | `Session.messages` | 用户、assistant、tool 的最近消息 | ContextBuilder 放入最近 N 条 |
+| 摘要 memory | `Session.state["summary"]` | 被压缩的旧消息摘要 | ContextBuilder 作为 system message 放入 |
 | 结构化 state | `Session.state["todos"]` | 当前 session 的 todo 数据 | todo 工具显式读写，ContextBuilder 放入状态摘要 |
 
 多 session 隔离：
 
-- `/new` 创建新的 `Session`。
-- `/use <session_id>` 切换回旧 session。
-- 每个 session 拥有自己的 `messages`、`summary` 和 `todos`。
-- todo 不再存在工具实例的全局属性里，避免窗口 1 和窗口 2 串数据。
+- `/new` 创建一个新的 `Session`。
+- `/use <session_id>` 可以切回旧 session。
+- 每个 session 都有自己的 messages、summary 和 todos。
+- todo 不存放在全局 `TodoTool` 实例中，避免窗口之间互相污染。
+
+设计原则：
+
+> Memory 不是一个无限增长的 messages 数组。对话历史、压缩摘要、结构化业务状态应该分开治理。
 
 ## Message / Context 拼接治理
 
-Runtime 不再无脑把完整 `session.messages` 传给 LLM，而是由 `ContextBuilder` 固定拼接：
+第一版直接把完整 `session.messages` 传给 LLM。这样虽然简单，但有两个问题：
+
+- 长对话会越来越大，first token latency 和成本都会上升。
+- 无法解释哪些信息应该进 context、为什么进、进多少。
+
+第二版增加 `ContextBuilder`，每轮固定按下面顺序拼接：
 
 1. system prompt
 2. session summary
@@ -127,11 +236,39 @@ Runtime 不再无脑把完整 `session.messages` 传给 LLM，而是由 `Context
 4. 最近 N 条消息
 5. 当前用户输入
 
-当历史消息超过阈值时，`Session.compact_if_needed()` 会把旧消息压缩进 `summary`，只保留最近消息。当前压缩是规则版摘要，不额外调用 LLM，目的是保持 demo 足够小，同时展示 context 治理思想。
+当历史消息超过阈值时，`Session.compact_if_needed()` 会把旧消息压缩进 `summary`，只保留最近消息。
 
-## Trace
+当前压缩使用规则版摘要，不额外调用 LLM。这样实现足够小，但能展示 Runtime 的关键思想：
 
-`trace` 命令可以查看 Runtime 过程：
+> Context 不是历史消息的简单堆叠，而是一次受治理的信息选择。
+
+## ReAct Loop
+
+`AgentLoop` 保留标准 ReAct 思路：
+
+```text
+接收用户输入
+  → 调 LLM
+  → 判断 stop / tool_calls
+  → 执行工具
+  → 工具结果回填
+  → 继续 loop 或返回最终答案
+```
+
+但第二版中，`AgentLoop` 不再负责所有细节，而是变成协调器：
+
+- context 拼接交给 `ContextBuilder`
+- 工具执行交给 `ToolExecutor`
+- memory 状态交给 `Session`
+- trace 记录交给 `TraceLogger`
+
+这也是项目的核心思路：
+
+> ReAct 是执行模式，Runtime 治理才是工程能力。
+
+## Trace 可观测性
+
+输入 `trace` 可以查看执行日志。主要事件类型：
 
 - `llm_request`
 - `llm_response`
@@ -141,4 +278,41 @@ Runtime 不再无脑把完整 `session.messages` 传给 LLM，而是由 `Context
 - `final_answer`
 - `error`
 
-这能证明 Agent 不是黑盒：每一步为什么调工具、工具返回什么、是否压缩上下文，都可以复盘。
+trace 的意义是让 Agent 不再是黑盒。面试时可以用它解释：
+
+- LLM 为什么调工具。
+- 工具拿到了什么参数。
+- 工具返回了什么结果。
+- context 有没有被压缩。
+- 最终答案是在哪一步生成的。
+
+## 设计取舍
+
+本项目故意保持最小实现：
+
+- 不做数据库持久化。
+- 不做向量检索 memory。
+- 不做异步工具。
+- 不做复杂权限系统。
+- 不做完整 JSON Schema validator。
+- 不引入任何 Agent 框架。
+
+这些能力在真实生产 Agent 中很重要，但对笔试代码来说会稀释重点。本项目优先展示 Runtime 最核心的三个治理能力：
+
+1. 工具治理
+2. Memory 治理
+3. Message 拼接治理
+
+## 面试讲法
+
+可以这样总结：
+
+> 第一版只是 ReAct demo，只能证明 LLM 会调用工具。第二版把项目升级成最小 Agent Runtime：`ToolExecutor` 负责工具治理，`Session` 负责 memory 分层和 session 隔离，`ContextBuilder` 负责 message 拼接和压缩，`TraceLogger` 负责可观测性。这样即使不用框架，也能说清楚框架底层到底在帮我们做什么。
+
+如果被问为什么不用框架：
+
+> 这道题考的是 Agent Runtime 的底层理解。手写不是为了替代框架，而是为了看清框架背后做了哪些事：schema 生成、工具注册、参数校验、循环调度、message 拼接、memory 管理和 trace。
+
+如果被问为什么 memory 不做向量库：
+
+> 当前是最小可用 Runtime，session 生命周期只在 CLI 进程内。短期对话用 recent messages，旧消息用 summary，结构化状态用 session.state。只有当历史规模变大、需要跨会话语义召回时，才需要升级到向量 memory。
