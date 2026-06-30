@@ -66,9 +66,9 @@ git -c http.sslVerify=false push origin master
 **Prompt:**
 > "eval 会不会有安全问题？怎么限制？"
 
-**方案：** 使用 `eval(expression, {"__builtins__": {}}, {})` 限制命名空间，切断对 `__import__`、`open` 等危险函数的访问。
+**第一版方案：** 使用 Python 内置求值能力，并限制命名空间，切断对危险函数的访问。
 
-**后面的简化：** 用户觉得太复杂，简化成只支持加减乘除 + 括号的 `eval`。
+**第二版修正：** 面试反馈后重新审视工具治理，改成 AST 白名单计算，只允许数字、括号、加减乘除和正负号。
 
 ### 问题 3: Search Mock 匹配失败（核心问题）
 
@@ -128,10 +128,12 @@ for keywords, content in MOCK_RESULTS.items():
 | 方案 | 优点 | 缺点 |
 |:--|:--|:--|
 | Session.messages | 简单，LLM 直接可读 | 只存文本，无法精确查询状态 |
-| TodoTool.tasks | 结构化数据，精确 CRUD | 需要 LLM 主动调用 `todo.list()` |
+| 工具实例属性 | 结构化数据，精确 CRUD | 多 session 时容易串状态 |
 | 外部数据库 | 持久化，可扩展 | 过度设计 |
 
-**选择：TodoTool.tasks** —— 最小可用方案，任务状态存在工具实例属性中，进程内全局共享，满足跨轮次需求。
+**第一版选择：工具实例属性。** 当时满足单 session demo，但会导致多个窗口共享任务状态。
+
+**第二版修正：Session.state。** todo 数据进入当前 session 的私有结构化 state，窗口 1 和窗口 2 互不影响。
 
 ### 为什么不用向量检索做 Memory？
 
@@ -168,3 +170,50 @@ for keywords, content in MOCK_RESULTS.items():
 | 9 | `trace_logger.py` + `main.py` | 日志 + 入口 |
 | 10 | 调试 + 搜索匹配修复 + Prompt 优化 | 问题修复 |
 | 11 | README + 文档 | 面试交付 |
+
+---
+
+## 六、二次改造：从 ReAct Demo 到 Runtime 治理
+
+### 面试官反馈
+
+> "无工具治理，无 memory 的治理，无 message 的拼接治理，暂时只有 ReAct 实现。"
+
+### 问题复盘
+
+第一版项目已经能跑 ReAct 循环：LLM 判断是否调用工具、工具结果回填、继续 loop 或返回答案。但这只能证明"会调工具"，不能证明 Runtime 有治理能力。
+
+这次用 AI 辅助重新拆解反馈后，明确了三个改造目标：
+
+| 反馈 | 代码层问题 | 改造方向 |
+|:--|:--|:--|
+| 无工具治理 | `AgentLoop` 直接 `tool.execute(**args)` | 增加 `ToolExecutor`，统一做存在性检查、required 参数校验、异常捕获、结构化返回和 trace |
+| 无 memory 治理 | `Session.messages` 全量保存，todo 是工具实例全局状态 | 把 memory 拆成 messages、summary、session.state；todo 进入 session 私有 state |
+| 无 message 拼接治理 | 调 LLM 时直接传 `session.messages` | 增加 `ContextBuilder`，按 system、summary、state、最近消息、当前输入拼接 |
+
+### 关键设计决策
+
+1. **工具治理层要独立于具体工具。**
+   LLM 输出不是可信输入，因此不能让模型直接驱动任意函数执行。`ToolExecutor` 负责把模型输出转成可控、可观测、可失败恢复的工具调用。
+
+2. **Memory 不是一个 messages 数组。**
+   短期对话、长期摘要、结构化业务状态是三类不同 memory。尤其是 todo 这种结构化状态，必须归属到当前 session，否则多窗口会互相污染。
+
+3. **Context 拼接是 Runtime 职责。**
+   直接塞全量历史虽然简单，但无法解释哪些信息进入模型、为什么进入、过长时怎么处理。`ContextBuilder` 把拼接顺序固定下来，并配合 summary 做基础压缩。
+
+4. **保持最小实现，不做过度工程。**
+   这次不引入数据库、向量库、异步任务系统或复杂 JSON Schema validator。笔试代码重点展示 Runtime 思路，复杂能力放到架构设计题里讨论。
+
+### 新版验证 Prompt
+
+| 提问 | 目的 |
+|:--|:--|
+| "如何证明工具调用不是 LLM 直接执行函数，而是经过 Runtime 治理？" | 推导 `ToolExecutor` 的职责 |
+| "两个聊天窗口都使用 todo 工具，状态应该放在工具实例还是 session？" | 推导 session 私有 state |
+| "长对话时哪些信息应该进入 context？顺序是什么？" | 推导 `ContextBuilder` |
+| "压缩 memory 一定要调用 LLM 吗？最小实现能不能用规则摘要？" | 控制复杂度，避免过度工程 |
+
+### 新版面试讲法
+
+> 第一版只是 ReAct demo，第二版把它升级成最小 Agent Runtime：ReAct loop 负责调度，ToolExecutor 负责工具治理，Session 负责 memory 分层和隔离，ContextBuilder 负责 message 拼接和压缩，TraceLogger 负责可观测性。这样即使不用框架，也能说清楚 LangChain / OpenHands 这类框架在 Runtime 层帮我们做了什么。

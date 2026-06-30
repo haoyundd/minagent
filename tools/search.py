@@ -1,5 +1,10 @@
 from tools.base import Tool
 
+
+# Mock 搜索数据：每个条目绑定一组关键词，命中任意一个即匹配
+# 设计原因：LLM 生成的搜索词天然带有修饰词和长尾词，不可能与预设 key 精确匹配
+# 所以用多关键词 + 子串匹配，提高命中率
+# 真实系统应替换为 embedding 向量检索或搜索引擎 API
 MOCK_RESULTS = {
     # ---- 技术类 ----
     ("agent", "智能体"): "智能体（Agent）是能自主感知环境、做出决策并执行动作的AI系统。ReAct（Reasoning + Acting）模式是目前主流实现方式。",
@@ -34,6 +39,8 @@ MOCK_RESULTS = {
 class SearchTool(Tool):
     name = "search"
     description = "搜索互联网信息。输入关键词，返回相关结果。"
+    risk_level = "mock"
+    stateful = False
     parameters = {
         "type": "object",
         "properties": {
@@ -46,6 +53,12 @@ class SearchTool(Tool):
     }
 
     def execute(self, query: str):
+        """Mock 搜索：多关键词子串匹配。
+
+        遍历所有关键词，query 包含任意一个即视为命中。
+        这种方式比精确匹配（key == query）更鲁棒，
+        因为 LLM 生成的搜索词通常带有额外修饰词。
+        """
         query_lower = query.lower().strip()
         for keywords, content in MOCK_RESULTS.items():
             for kw in keywords:
