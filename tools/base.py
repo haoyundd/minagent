@@ -78,7 +78,7 @@ class ToolExecutor:
     """工具治理层：统一管理工具调用前后的安全边界。
 
     LLM 返回的 tool_call 不是可信输入，Runtime 必须先做工具存在性检查、
-    required 参数校验、异常隔离和 trace 记录，再决定是否真正执行工具。
+    required/type/enum 参数校验、异常隔离和 trace 记录，再决定是否真正执行工具。
     """
 
     def __init__(self, registry: ToolRegistry, trace_logger=None):
@@ -91,16 +91,19 @@ class ToolExecutor:
         返回结构固定包含 ok/tool/input/output/error，方便 LLM、测试和 trace
         用同一种方式理解成功与失败。
         """
-        safe_args = tool_args if isinstance(tool_args, dict) else {}
+        if not isinstance(tool_args, dict):
+            return self._error(tool_name, {}, "工具参数必须是 JSON object", step_num)
+
+        safe_args = tool_args
         self._log(step_num, "tool_call", f"{tool_name}: {safe_args}")
 
         tool = self.registry.get(tool_name)
         if tool is None:
             return self._error(tool_name, safe_args, f"工具 {tool_name} 不存在，可用: {self.registry.list_names()}", step_num)
 
-        missing = self._find_missing_required(tool, safe_args)
-        if missing:
-            return self._error(tool_name, safe_args, f"缺少必填参数: {missing}", step_num)
+        errors = self._validate_args(tool, safe_args)
+        if errors:
+            return self._error(tool_name, safe_args, "；".join(errors), step_num)
 
         try:
             # stateful 工具需要访问当前 Session 的私有状态；无状态工具只接收业务参数。
@@ -111,20 +114,68 @@ class ToolExecutor:
         except Exception as e:
             return self._error(tool_name, safe_args, f"工具执行失败: {e}", step_num)
 
+        tool_error = self._extract_tool_error(output)
         result = {
-            "ok": True,
+            "ok": tool_error == "",
             "tool": tool_name,
             "input": safe_args,
             "output": output,
-            "error": "",
+            "error": tool_error,
         }
+        if tool_error:
+            self._log(step_num, "error", tool_error)
         self._log(step_num, "tool_result", f"{tool_name}: {result}")
         return result
 
-    def _find_missing_required(self, tool: Tool, tool_args: dict):
-        """按工具 schema 的 required 字段做最小参数校验。"""
+    def _validate_args(self, tool: Tool, tool_args: dict):
+        """按工具 schema 做最小参数校验。
+
+        只实现 Runtime 最需要的 required/type/enum，不追求完整 JSON Schema。
+        这样能管住 LLM 常见错误，又不会为了 demo 引入额外依赖。
+        """
+        errors = []
         required = tool.parameters.get("required", [])
-        return [name for name in required if name not in tool_args or tool_args.get(name) in (None, "")]
+        missing = [name for name in required if name not in tool_args or tool_args.get(name) in (None, "")]
+        if missing:
+            errors.append(f"缺少必填参数: {missing}")
+
+        properties = tool.parameters.get("properties", {})
+        for name, value in tool_args.items():
+            schema = properties.get(name)
+            if not schema:
+                continue
+
+            expected_type = schema.get("type")
+            if expected_type and not self._match_json_type(value, expected_type):
+                errors.append(f"参数 {name} 类型错误: 期望 {expected_type}，实际 {type(value).__name__}")
+
+            enum_values = schema.get("enum")
+            if enum_values and value not in enum_values:
+                errors.append(f"参数 {name} 取值无效: {value}，可选: {enum_values}")
+
+        return errors
+
+    def _match_json_type(self, value, expected_type: str):
+        """把 JSON Schema 的基础类型映射到 Python 类型。"""
+        type_map = {
+            "string": str,
+            "object": dict,
+            "array": list,
+            "boolean": bool,
+        }
+        if expected_type == "number":
+            return isinstance(value, (int, float)) and not isinstance(value, bool)
+        if expected_type == "integer":
+            return isinstance(value, int) and not isinstance(value, bool)
+        if expected_type in type_map:
+            return isinstance(value, type_map[expected_type])
+        return True
+
+    def _extract_tool_error(self, output):
+        """识别工具内部用返回值表达的业务错误。"""
+        if isinstance(output, dict) and output.get("error"):
+            return str(output["error"])
+        return ""
 
     def _error(self, tool_name: str, tool_args: dict, message: str, step_num: int):
         """把所有工具失败统一包装成结构化错误。"""

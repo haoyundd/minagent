@@ -171,8 +171,9 @@ LLM 基于工具结果继续 loop 或返回最终答案
 第二版增加 `ToolExecutor`，所有工具调用必须先经过治理层：
 
 - 检查工具是否存在。
-- 检查 schema 中的 required 参数。
+- 检查 schema 中的 required、type、enum 参数约束。
 - 捕获工具内部异常。
+- 识别工具返回值里的业务错误，并统一归一化为 `ok: false`。
 - 统一包装工具结果。
 - 写入 trace，方便复盘。
 
@@ -199,6 +200,8 @@ LLM 基于工具结果继续 loop 或返回最终答案
 设计原则：
 
 > LLM 输出不是可信输入。LLM 可以提出工具调用意图，但 Runtime 必须决定能不能执行、怎么执行、如何失败恢复。
+
+当前没有引入完整 JSON Schema validator，而是手写最小校验：`required`、`type`、`enum`。这样足够拦住 LLM 常见的参数错误，也避免为了笔试 demo 引入额外复杂度。
 
 ## Memory 治理
 

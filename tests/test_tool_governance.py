@@ -3,6 +3,7 @@ import unittest
 from agent.session import Session
 from tools.base import Tool, ToolExecutor, ToolRegistry
 from tools.calculator import CalculatorTool
+from tools.todo import TodoTool
 
 
 class ExplodingTool(Tool):
@@ -39,6 +40,37 @@ class ToolGovernanceTest(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertIn("缺少必填参数", result["error"])
+
+    def test_type_error_returns_structured_error(self):
+        registry = ToolRegistry()
+        registry.register(CalculatorTool())
+        executor = ToolExecutor(registry)
+
+        result = executor.execute("calculator", {"expression": 123}, session=Session())
+
+        self.assertFalse(result["ok"])
+        self.assertIn("类型错误", result["error"])
+
+    def test_enum_error_returns_structured_error_before_tool_runs(self):
+        registry = ToolRegistry()
+        registry.register(TodoTool())
+        executor = ToolExecutor(registry)
+
+        result = executor.execute("todo", {"action": "delete"}, session=Session())
+
+        self.assertFalse(result["ok"])
+        self.assertIn("取值无效", result["error"])
+
+    def test_tool_business_error_is_normalized(self):
+        registry = ToolRegistry()
+        registry.register(CalculatorTool())
+        executor = ToolExecutor(registry)
+
+        result = executor.execute("calculator", {"expression": "__import__('os')"}, session=Session())
+
+        self.assertFalse(result["ok"])
+        self.assertIn("计算失败", result["error"])
+        self.assertIn("error", result["output"])
 
     def test_tool_exception_is_captured(self):
         registry = ToolRegistry()
