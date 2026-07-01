@@ -82,7 +82,6 @@ python -m unittest discover -s tests
 
 ## 推荐演示流程
 
-可以按下面顺序录屏或手动演示：
 
 ```text
 python main.py
@@ -306,16 +305,3 @@ trace 的意义是让 Agent 不再是黑盒。面试时可以用它解释：
 2. Memory 治理
 3. Message 拼接治理
 
-## 面试讲法
-
-可以这样总结：
-
-> 第一版只是 ReAct demo，只能证明 LLM 会调用工具。第二版把项目升级成最小 Agent Runtime：`ToolExecutor` 负责工具治理，`Session` 负责 memory 分层和 session 隔离，`ContextBuilder` 负责 message 拼接和压缩，`TraceLogger` 负责可观测性。这样即使不用框架，也能说清楚框架底层到底在帮我们做什么。
-
-如果被问为什么不用框架：
-
-> 这道题考的是 Agent Runtime 的底层理解。手写不是为了替代框架，而是为了看清框架背后做了哪些事：schema 生成、工具注册、参数校验、循环调度、message 拼接、memory 管理和 trace。
-
-如果被问为什么 memory 不做向量库：
-
-> 当前是最小可用 Runtime，session 生命周期只在 CLI 进程内。短期对话用 recent messages，旧消息用 summary，结构化状态用 session.state。只有当历史规模变大、需要跨会话语义召回时，才需要升级到向量 memory。
